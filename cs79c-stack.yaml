@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CS79C EC2, public S3 banner, and DynamoDB message board POC
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: cs79c-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cs79c-public-subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cs79c-public-subnet-2
+
+  PublicSubnet1RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP to the POC website
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourcePrefixListId: pl-047d464325e7bf465
+
+#  AssetsBucket:
+#    Type: AWS::S3::Bucket
+#    Properties:
+#      PublicAccessBlockConfiguration:
+#        BlockPublicAcls: true
+#        IgnorePublicAcls: true
+#        BlockPublicPolicy: false
+#        RestrictPublicBuckets: false
+
+#  AssetsBucketPolicy:
+#    Type: AWS::S3::BucketPolicy
+#    Properties:
+#      Bucket: !Ref AssetsBucket
+#      PolicyDocument:
+#        Version: "2012-10-17"
+#        Statement:
+#          - Sid: AllowGetObject
+#            Effect: Allow
+#            Principal: "*"
+#            Action: s3:GetObject
+#            Resource: 
+#            - !Sub "${AssetsBucket.Arn}/banner.jpg"
+#            - !Sub "${AssetsBucket.Arn}/index.html"
+
+#  MessageTable:
+#    Type: AWS::DynamoDB::Table
+#    Properties:
+#      Name: CS79C_TABLE
+#      BillingMode: PAY_PER_REQUEST
+#      AttributeDefinitions:
+#        - AttributeName: MessageId
+#          AttributeType: S
+#      KeySchema:
+#        - AttributeName: MessageId
+#          KeyType: HASH
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MessageTableAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: arn:aws:dynamodb:us-west-2:884537046858:table/CS79C_TABLE
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  WebServer:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultRoute
+    Properties:
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      Tags:
+        - Key: Name
+          Value: cs79c-web-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf install -y httpd python3 awscli
+          sudo aws s3 cp s3://finalprojectv5-assetsbucket-s3mykwkr3d0o/web/index.html /var/www/html/index.html
+          sudo aws s3 cp s3://finalprojectv5-assetsbucket-s3mykwkr3d0o/banner.jpg /var/www/html/banner.jpg
+          sudo aws s3 cp s3://finalprojectv5-assetsbucket-s3mykwkr3d0o/web/post-message.py /var/www/cgi-bin/post-message.py
+          sudo aws s3 cp s3://finalprojectv5-assetsbucket-s3mykwkr3d0o/web/messages.py /var/www/cgi-bin/messages.py
+          sudo chmod +x /var/www/cgi-bin/*.py
+          sudo echo "SetEnv CS79C_TABLE CS79C_TABLE" > /etc/httpd/conf.d/env.conf
+          sudo echo "SetEnv AWS_DEFAULT_REGION us-west-2" >> /etc/httpd/conf.d/env.conf
+          systemctl enable --now httpd
+        #wget -O /var/www/html/banner.jpg https://${AssetsBucket}.s3.${AWS::Region}.amazonaws.com/banner.jpg
+        #wget -O /var/www/html/index.html https://${AssetsBucket}.s3.${AWS::Region}.amazonaws.com/index.html
