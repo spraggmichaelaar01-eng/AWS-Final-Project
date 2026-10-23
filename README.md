@@ -16,4 +16,7 @@ To install this application:
 7. Add Load Balancer as needed.
 8. Open the EC2 instance and open the Public iPV4 address. Ensure you are on http and not https.
 
+Video demo / walkthrough:
+https://youtu.be/BzeJfPc5z24
+
 ![Alt Text](Evidence/diagram.png)
