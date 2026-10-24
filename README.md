@@ -8,6 +8,7 @@ To install this application:
 3. SSH into EC2 instance. Copy index.html and banner.jpg into /var/www/html using aws s3 cp <s3 URI> <filename>
 4. From EC2, navigate to var/www/ and create director cgi-bin. In cgi-bin, and copy both python files into /cgi-bin as above.
 5. Run the following commands from the EC2 terminal:
+   
     sudo yum update -y
     sudo yum install python3-pip -y
     pip3 install boto3 
